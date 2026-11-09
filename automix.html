@@ -1,0 +1,416 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Автомикс</title>
+<style>
+:root{
+  --bg:#f3f5f4; --fg:#16201e; --mut:#5d6b68; --card:#ffffff; --line:#d3dbd8;
+  --acc:#0f766e; --acc-fg:#ffffff; --warn:#b42318;
+}
+@media (prefers-color-scheme:dark){
+  :root{--bg:#101615; --fg:#e6eeec; --mut:#8fa09c; --card:#182120; --line:#2b3836; --acc:#2dd4bf; --acc-fg:#06231f; --warn:#f97066}
+}
+*{box-sizing:border-box}
+html,body{margin:0}
+body{background:var(--bg);color:var(--fg);font:15px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+main{max-width:920px;margin:0 auto;padding:28px 18px 60px}
+h1{font:700 28px/1.2 system-ui,sans-serif;margin:0 0 4px;letter-spacing:-.01em}
+.sub{color:var(--mut);margin:0 0 22px}
+section{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:16px;margin-bottom:14px}
+h2{font-size:15px;margin:0 0 10px}
+.row{display:flex;flex-wrap:wrap;gap:12px;align-items:end}
+label{display:flex;flex-direction:column;gap:4px;color:var(--mut);font-size:13px}
+input,select,button{font:inherit;color:var(--fg)}
+input[type=text],input[type=password],input[type=number],select{background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:7px 9px}
+input:focus-visible,select:focus-visible,button:focus-visible{outline:2px solid var(--acc);outline-offset:1px}
+button{background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:7px 12px;cursor:pointer}
+button:hover{border-color:var(--acc)}
+button.main{background:var(--acc);color:var(--acc-fg);border-color:var(--acc);font-weight:600}
+button:disabled{opacity:.5;cursor:default}
+#drop{border:2px dashed var(--line);border-radius:10px;padding:26px;text-align:center;color:var(--mut);cursor:pointer}
+#drop.over{border-color:var(--acc);color:var(--fg)}
+.hint{color:var(--mut);font-size:13px;margin:8px 0 0}
+.tablewrap{overflow-x:auto}
+table{width:100%;border-collapse:collapse;min-width:560px}
+th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line);vertical-align:middle}
+th{font-weight:600;color:var(--mut);font-size:13px}
+td.name{max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+td input[type=number]{width:72px}
+td.num{color:var(--mut);width:34px}
+td.act button{padding:2px 8px}
+.st{color:var(--mut);font-size:13px}
+.st.err{color:var(--warn)}
+#status{margin-top:10px;min-height:22px}
+progress{width:100%;height:8px;margin-top:8px}
+</style>
+</head>
+<body>
+<main>
+  <h1>Автомикс</h1>
+  <p class="sub">Склеивает песни в один файл: обрезает тишину, выравнивает громкость, плавно переходит между треками. Всё считается в браузере, файлы никуда не загружаются (кроме 30-секундного фрагмента для Gemini, если указан ключ).</p>
+
+  <section>
+    <h2>Настройки</h2>
+    <div class="row">
+      <label>Ключ Gemini API (необязательно)
+        <input id="key" type="password" size="30" autocomplete="off" placeholder="AIza...">
+      </label>
+      <label>Модель
+        <input id="model" type="text" size="18" value="gemini-2.5-flash">
+      </label>
+      <label>Кроссфейд, сек
+        <input id="cf" type="number" min="1" max="20" step="1" value="6" style="width:80px">
+      </label>
+      <label>Формат
+        <select id="fmt"><option value="mp3">MP3 192 кбит/с</option><option value="wav">WAV</option></select>
+      </label>
+    </div>
+    <p class="hint">Ключ хранится только в этом браузере. Без ключа жанр не определяется, сортировка идёт только по BPM. Ключ бесплатно создаётся в Google AI Studio.</p>
+  </section>
+
+  <section>
+    <h2>Треки</h2>
+    <div id="drop" tabindex="0">Перетащи сюда mp3 / wav / m4a или нажми, чтобы выбрать файлы</div>
+    <input id="files" type="file" accept="audio/*" multiple hidden>
+    <div class="tablewrap" style="margin-top:12px">
+      <table id="tbl" hidden>
+        <thead><tr><th>#</th><th>Файл</th><th>Жанр</th><th>BPM</th><th>Длина</th><th></th></tr></thead>
+        <tbody id="rows"></tbody>
+      </table>
+    </div>
+    <div class="row" style="margin-top:12px">
+      <button id="sort">Сортировать: жанр, потом BPM</button>
+      <button id="clear">Очистить список</button>
+      <button id="mix" class="main">Собрать микс</button>
+    </div>
+    <div id="status" class="st"></div>
+    <progress id="prog" value="0" max="1" hidden></progress>
+  </section>
+</main>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/lamejs/1.2.1/lame.min.js"></script>
+<script>
+const GENRES = ['rock','metal','pop','hip-hop','electronic','dance','r&b','jazz','classical','folk','reggae','latin','ambient','other'];
+const SR = 44100;
+const ctx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: SR });
+const $ = id => document.getElementById(id);
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+let tracks = [];
+let busy = false;
+
+/* ---------- storage (ключ и модель помним в браузере) ---------- */
+const ls = {
+  get(k){ try { return localStorage.getItem(k); } catch(e){ return null; } },
+  set(k,v){ try { localStorage.setItem(k,v); } catch(e){} }
+};
+$('key').value = ls.get('gemini_key') || '';
+$('model').value = ls.get('gemini_model') || 'gemini-2.5-flash';
+$('key').addEventListener('change', () => ls.set('gemini_key', $('key').value.trim()));
+$('model').addEventListener('change', () => ls.set('gemini_model', $('model').value.trim()));
+
+/* ---------- аудио-утилиты ---------- */
+async function decode(file){
+  const buf = await file.arrayBuffer();
+  return await ctx.decodeAudioData(buf);
+}
+function channels(ab){
+  const L = ab.getChannelData(0);
+  const R = ab.numberOfChannels > 1 ? ab.getChannelData(1) : L;
+  return [L, R];
+}
+// границы без тишины в начале и конце
+function trimRange(L, R, thr = 0.004){
+  let s = 0, e = L.length - 1;
+  while (s < e && Math.abs(L[s]) < thr && Math.abs(R[s]) < thr) s++;
+  while (e > s && Math.abs(L[e]) < thr && Math.abs(R[e]) < thr) e--;
+  const pad = Math.floor(SR * 0.05);
+  return [Math.max(0, s - pad), Math.min(L.length, e + 1 + pad)];
+}
+// грубое определение BPM: автокорреляция огибающей, с уклоном к 120 (против ошибок в 2 раза)
+function detectBpm(L, s, e){
+  const len = e - s, mid = s + (len >> 1);
+  const half = Math.min(len >> 1, SR * 30);
+  const a = mid - half, b = mid + half, hop = 256;
+  const n = Math.floor((b - a) / hop);
+  if (n < 200) return 0;
+  const env = new Float32Array(n);
+  for (let i = 0; i < n; i++){
+    let sum = 0;
+    for (let j = 0; j < hop; j++){ const v = L[a + i*hop + j]; sum += v*v; }
+    env[i] = Math.sqrt(sum / hop);
+  }
+  const nov = new Float32Array(n);
+  let mean = 0;
+  for (let i = 1; i < n; i++){ const d = env[i] - env[i-1]; nov[i] = d > 0 ? d : 0; mean += nov[i]; }
+  mean /= n;
+  for (let i = 0; i < n; i++) nov[i] -= mean;
+  const fps = SR / hop;
+  let best = -Infinity, bestLag = 0;
+  for (let lag = Math.floor(fps*60/190); lag <= Math.ceil(fps*60/60); lag++){
+    let sum = 0;
+    for (let i = lag; i < n; i++) sum += nov[i] * nov[i - lag];
+    sum /= (n - lag);
+    const bpm = 60 * fps / lag;
+    const w = Math.exp(-0.5 * Math.pow(Math.log2(bpm / 120) / 0.6, 2));
+    const sc = sum * w;
+    if (sc > best){ best = sc; bestLag = lag; }
+  }
+  return bestLag ? Math.round(60 * fps / bestLag) : 0;
+}
+// выравнивание громкости, чтобы треки не отличались резко
+function normalize(L, R){
+  let sum = 0, peak = 0;
+  for (let i = 0; i < L.length; i++){
+    const a = L[i], b = R[i];
+    sum += a*a + b*b;
+    const m = Math.max(Math.abs(a), Math.abs(b));
+    if (m > peak) peak = m;
+  }
+  const rms = Math.sqrt(sum / (2 * L.length)) || 1e-6;
+  let g = Math.min(Math.max(0.1 / rms, 0.25), 4);
+  g = Math.min(g, 0.97 / (peak || 1));
+  for (let i = 0; i < L.length; i++){ L[i] *= g; R[i] *= g; }
+}
+const f2i = x => { x = x < -1 ? -1 : x > 1 ? 1 : x; return x < 0 ? x * 32768 : x * 32767; };
+function toI16(a){ const o = new Int16Array(a.length); for (let i = 0; i < a.length; i++) o[i] = f2i(a[i]); return o; }
+
+/* ---------- WAV / MP3 ---------- */
+function wavHeader(bytes, sr, ch){
+  const h = new DataView(new ArrayBuffer(44));
+  const w = (o, s) => { for (let i = 0; i < s.length; i++) h.setUint8(o + i, s.charCodeAt(i)); };
+  w(0,'RIFF'); h.setUint32(4, 36 + bytes, true); w(8,'WAVE'); w(12,'fmt ');
+  h.setUint32(16, 16, true); h.setUint16(20, 1, true); h.setUint16(22, ch, true);
+  h.setUint32(24, sr, true); h.setUint32(28, sr * ch * 2, true); h.setUint16(32, ch * 2, true);
+  h.setUint16(34, 16, true); w(36,'data'); h.setUint32(40, bytes, true);
+  return new Uint8Array(h.buffer);
+}
+function wavSink(){
+  const parts = []; let bytes = 0;
+  return {
+    ext: 'wav',
+    push(L, R){
+      const o = new Int16Array(L.length * 2);
+      for (let i = 0; i < L.length; i++){ o[2*i] = f2i(L[i]); o[2*i+1] = f2i(R[i]); }
+      parts.push(o); bytes += o.byteLength;
+    },
+    finish(){ return new Blob([wavHeader(bytes, SR, 2), ...parts], { type: 'audio/wav' }); }
+  };
+}
+function mp3Sink(){
+  const enc = new lamejs.Mp3Encoder(2, SR, 192);
+  const parts = [];
+  return {
+    ext: 'mp3',
+    push(L, R){
+      const l = toI16(L), r = toI16(R);
+      for (let i = 0; i < l.length; i += 1152){
+        const b = enc.encodeBuffer(l.subarray(i, i + 1152), r.subarray(i, i + 1152));
+        if (b.length) parts.push(new Int8Array(b));
+      }
+    },
+    finish(){ const b = enc.flush(); if (b.length) parts.push(new Int8Array(b)); return new Blob(parts, { type: 'audio/mpeg' }); }
+  };
+}
+
+/* ---------- жанр через Gemini ---------- */
+function snippetWav(L, R, s, e){
+  const len = e - s, seg = Math.min(len, SR * 30);
+  const a = s + ((len - seg) >> 1), n = Math.floor(seg / 2);
+  const pcm = new Int16Array(n);
+  for (let i = 0; i < n; i++){
+    const k = a + i * 2;
+    pcm[i] = f2i((L[k] + R[k] + L[k+1] + R[k+1]) / 4);
+  }
+  return new Blob([wavHeader(n * 2, 22050, 1), pcm], { type: 'audio/wav' });
+}
+function b64(blob){
+  return new Promise(res => { const f = new FileReader(); f.onload = () => res(String(f.result).split(',')[1]); f.readAsDataURL(blob); });
+}
+async function geminiGenre(data){
+  const key = $('key').value.trim();
+  const model = $('model').value.trim() || 'gemini-2.5-flash';
+  const prompt = 'Listen to this music clip and choose ONE genre from this list: ' + GENRES.join(', ') + '. Answer with the genre word only.';
+  for (let attempt = 0; attempt < 4; attempt++){
+    const r = await fetch('https://generativelanguage.googleapis.com/v1beta/models/' + encodeURIComponent(model) + ':generateContent', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-goog-api-key': key },
+      body: JSON.stringify({ contents: [{ parts: [{ text: prompt }, { inline_data: { mime_type: 'audio/wav', data } }] }] })
+    });
+    if (r.status === 429){ await sleep(15000); continue; }
+    if (!r.ok) throw new Error('Gemini ответил ' + r.status);
+    const j = await r.json();
+    const parts = (j.candidates && j.candidates[0] && j.candidates[0].content && j.candidates[0].content.parts) || [];
+    const t = parts.map(p => p.text || '').join(' ').toLowerCase().trim();
+    return GENRES.find(g => t.startsWith(g)) || GENRES.find(g => t.includes(g)) || 'other';
+  }
+  throw new Error('Gemini: превышен лимит запросов, попробуй позже');
+}
+
+/* ---------- анализ треков ---------- */
+async function analyze(t){
+  t.status = 'analyzing'; render();
+  try {
+    const ab = await decode(t.file);
+    const [L, R] = channels(ab);
+    const [s, e] = trimRange(L, R);
+    t.dur = (e - s) / SR;
+    t.bpm = detectBpm(L, s, e);
+    t.genre = '—';
+    const ck = 'g:' + t.file.name + ':' + t.file.size;
+    let g = ls.get(ck);
+    if (!g && $('key').value.trim()){
+      try {
+        g = await geminiGenre(await b64(snippetWav(L, R, s, e)));
+        ls.set(ck, g);
+        await sleep(4000);
+      } catch (err){ t.note = err.message; }
+    }
+    if (g) t.genre = g;
+    t.status = 'ready';
+  } catch (err){
+    t.status = 'error'; t.note = 'Не удалось прочитать файл';
+  }
+  render();
+}
+async function analyzeAll(){
+  if (busy) return;
+  busy = true;
+  for (const t of tracks.slice()){
+    if (t.status === 'new') await analyze(t);
+  }
+  busy = false;
+  const notes = tracks.filter(t => t.note).map(t => t.note);
+  setStatus(notes.length ? notes[0] : 'Анализ завершён. Проверь порядок и жанры, потом нажми «Собрать микс».', !!notes.length);
+}
+
+/* ---------- сортировка ---------- */
+function sortTracks(){
+  const gs = {};
+  tracks.forEach(t => (gs[t.genre] = gs[t.genre] || []).push(t.bpm));
+  const avg = g => gs[g].reduce((a, b) => a + b, 0) / gs[g].length;
+  tracks.sort((a, b) => a.genre === b.genre ? a.bpm - b.bpm : (avg(a.genre) - avg(b.genre)) || a.genre.localeCompare(b.genre));
+  render();
+}
+
+/* ---------- сборка микса ---------- */
+async function mix(){
+  if (!tracks.length || busy) return;
+  busy = true; setButtons(true);
+  const cfS = Math.round((+$('cf').value || 6) * SR);
+  const sink = $('fmt').value === 'mp3' ? mp3Sink() : wavSink();
+  const prog = $('prog'); prog.hidden = false; prog.max = tracks.length; prog.value = 0;
+  let tail = null;
+  try {
+    for (let i = 0; i < tracks.length; i++){
+      const t = tracks[i];
+      setStatus('Обработка ' + (i + 1) + ' из ' + tracks.length + ': ' + t.file.name);
+      const ab = await decode(t.file);
+      const [L0, R0] = channels(ab);
+      const [s, e] = trimRange(L0, R0);
+      const L = L0.slice(s, e), R = (R0 === L0 ? L0 : R0).slice(s, e);
+      normalize(L, R);
+      if (i === 0){ // плавное нарастание в начале
+        const n = Math.min(L.length, Math.round(3 * SR));
+        for (let k = 0; k < n; k++){ const m = Math.sin(k / n * Math.PI / 2); L[k] *= m; R[k] *= m; }
+      }
+      let start = 0;
+      if (tail){
+        const tl = tail.L.length;
+        const c = Math.min(tl, L.length >> 1, cfS);
+        sink.push(tail.L.subarray(0, tl - c), tail.R.subarray(0, tl - c));
+        const mL = new Float32Array(c), mR = new Float32Array(c);
+        for (let k = 0; k < c; k++){
+          const x = k / c * Math.PI / 2, co = Math.cos(x), si = Math.sin(x);
+          mL[k] = tail.L[tl - c + k] * co + L[k] * si;
+          mR[k] = tail.R[tl - c + k] * co + R[k] * si;
+        }
+        sink.push(mL, mR);
+        start = c;
+      }
+      const keep = Math.min(cfS, L.length - start);
+      sink.push(L.subarray(start, L.length - keep), R.subarray(start, R.length - keep));
+      tail = { L: L.subarray(L.length - keep), R: R.subarray(R.length - keep) };
+      prog.value = i + 1;
+      await sleep(0);
+    }
+    // затухание в конце последнего трека
+    const n = tail.L.length;
+    for (let k = 0; k < n; k++){ const m = Math.cos(k / n * Math.PI / 2); tail.L[k] *= m; tail.R[k] *= m; }
+    sink.push(tail.L, tail.R);
+    setStatus('Кодирую файл…');
+    await sleep(20);
+    const blob = sink.finish();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = 'mix.' + sink.ext;
+    document.body.appendChild(a); a.click(); a.remove();
+    setStatus('Готово: mix.' + sink.ext + ' (' + (blob.size / 1048576).toFixed(1) + ' МБ).');
+  } catch (err){
+    setStatus('Ошибка: ' + err.message, true);
+  }
+  prog.hidden = true; busy = false; setButtons(false);
+}
+
+/* ---------- интерфейс ---------- */
+function setStatus(text, isErr){ const s = $('status'); s.textContent = text; s.className = 'st' + (isErr ? ' err' : ''); }
+function setButtons(dis){ ['mix','sort','clear'].forEach(id => $(id).disabled = dis); }
+function fmtDur(sec){ if (!sec) return '—'; const m = Math.floor(sec / 60), s = Math.round(sec % 60); return m + ':' + String(s).padStart(2, '0'); }
+
+function render(){
+  $('tbl').hidden = tracks.length === 0;
+  const body = $('rows'); body.textContent = '';
+  tracks.forEach((t, i) => {
+    const tr = document.createElement('tr');
+    const td = (cls) => { const c = document.createElement('td'); if (cls) c.className = cls; tr.appendChild(c); return c; };
+    td('num').textContent = i + 1;
+    const nm = td('name'); nm.textContent = t.file.name; nm.title = t.file.name;
+    const g = td();
+    if (t.status === 'ready'){
+      const sel = document.createElement('select');
+      ['—'].concat(GENRES).forEach(x => { const o = document.createElement('option'); o.value = o.textContent = x; if (x === t.genre) o.selected = true; sel.appendChild(o); });
+      sel.onchange = () => { t.genre = sel.value; };
+      g.appendChild(sel);
+    } else {
+      g.innerHTML = '<span class="st' + (t.status === 'error' ? ' err' : '') + '"></span>';
+      g.firstChild.textContent = t.status === 'error' ? t.note : t.status === 'analyzing' ? 'анализ…' : 'в очереди';
+    }
+    const b = td();
+    if (t.status === 'ready'){
+      const inp = document.createElement('input'); inp.type = 'number'; inp.min = 0; inp.max = 300; inp.value = t.bpm;
+      inp.onchange = () => { t.bpm = +inp.value || 0; };
+      b.appendChild(inp);
+    }
+    td().textContent = fmtDur(t.dur);
+    const act = td('act');
+    const mk = (label, fn, dis) => { const x = document.createElement('button'); x.textContent = label; x.disabled = !!dis; x.onclick = fn; act.appendChild(x); };
+    mk('↑', () => { [tracks[i-1], tracks[i]] = [tracks[i], tracks[i-1]]; render(); }, i === 0);
+    mk('↓', () => { [tracks[i+1], tracks[i]] = [tracks[i], tracks[i+1]]; render(); }, i === tracks.length - 1);
+    mk('✕', () => { tracks.splice(i, 1); render(); });
+    body.appendChild(tr);
+  });
+}
+
+function addFiles(list){
+  const added = Array.from(list).filter(f => f.type.startsWith('audio/') || /\.(mp3|wav|m4a|aac|ogg|flac)$/i.test(f.name));
+  if (!added.length) return;
+  added.forEach(f => tracks.push({ file: f, status: 'new', genre: '—', bpm: 0, dur: 0 }));
+  render();
+  setStatus('Анализирую треки…');
+  analyzeAll();
+}
+
+const drop = $('drop');
+drop.onclick = () => $('files').click();
+drop.onkeydown = e => { if (e.key === 'Enter' || e.key === ' ') $('files').click(); };
+$('files').onchange = e => { addFiles(e.target.files); e.target.value = ''; };
+['dragenter','dragover'].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.add('over'); }));
+['dragleave','drop'].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.remove('over'); }));
+drop.addEventListener('drop', e => addFiles(e.dataTransfer.files));
+$('sort').onclick = sortTracks;
+$('clear').onclick = () => { tracks = []; render(); setStatus(''); };
+$('mix').onclick = mix;
+</script>
+</body>
+</html>
