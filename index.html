@@ -15,7 +15,7 @@
 *{box-sizing:border-box}
 html,body{margin:0}
 body{background:var(--bg);color:var(--fg);font:15px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
-main{max-width:920px;margin:0 auto;padding:28px 18px 60px}
+main{max-width:1320px;margin:0 auto;padding:28px 18px 60px}
 h1{font:700 28px/1.2 system-ui,sans-serif;margin:0 0 4px;letter-spacing:-.01em}
 .sub{color:var(--mut);margin:0 0 22px}
 section{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:16px;margin-bottom:14px}
@@ -44,6 +44,11 @@ td.pick{white-space:nowrap;width:60px}
 #sres{margin-top:6px}
 .sug{display:flex;align-items:center;gap:10px;width:100%;text-align:left;margin-top:4px}
 .sug img{border-radius:4px}
+.layout{display:grid;grid-template-columns:minmax(0,1fr);gap:16px}
+@media (min-width:1060px){.layout{grid-template-columns:minmax(0,1fr) 330px}}
+#side{position:sticky;top:14px;align-self:start}
+tr.now td{background:color-mix(in srgb,var(--acc) 14%,transparent)}
+#queue{margin:0;padding-left:20px}#queue li{margin:2px 0}
 .grip{cursor:grab;color:var(--mut);margin-right:8px;user-select:none}
 tr.skip td:not(.pick):not(.act){opacity:.4}
 tr.dragging{opacity:.4}
@@ -60,6 +65,7 @@ progress{width:100%;height:8px;margin-top:8px}
   <h1>Automix</h1>
   <p class="sub">Joins songs into one file: trims silence, evens out loudness and crossfades between tracks. Everything runs in your browser and files are never uploaded (except a 30-second clip sent to Gemini if you add a key).</p>
 
+<div class="layout"><div>
   <section>
     <h2>Settings</h2>
     <div class="row">
@@ -105,6 +111,27 @@ progress{width:100%;height:8px;margin-top:8px}
     <progress id="prog" value="0" max="1" hidden></progress>
     <audio id="result" controls hidden style="width:100%;margin-top:10px"></audio>
   </section>
+</div>
+<aside id="side">
+  <section>
+    <h2>Now playing</h2>
+    <div id="np-title" style="font-weight:600;overflow-wrap:anywhere">Nothing playing</div>
+    <div id="np-meta" class="st">Press ▶ on a track or the Play button</div>
+    <progress id="np-bar" value="0" max="1"></progress>
+    <div id="np-time" class="st"></div>
+    <div class="row" style="margin-top:10px"><button id="np-play" class="main">▶ Play</button><button id="np-next">Next ⏭</button></div>
+  </section>
+  <section>
+    <h2>Next transition</h2>
+    <div id="nx-info" class="st" style="white-space:pre-line">—</div>
+  </section>
+  <section>
+    <h2>Up next</h2>
+    <div id="qstat" class="st"></div>
+    <ol id="queue"></ol>
+    <p class="hint">Use ⏭ on a row to play it next, or drag rows. Changes count until about a second before the crossfade starts.</p>
+  </section>
+</aside></div>
 </main>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/lamejs/1.2.1/lame.min.js"></script>
@@ -261,6 +288,7 @@ async function geminiGenre(data){
   const model = $('model').value.trim() || 'gemini-2.5-flash';
   const prompt = 'Listen to this music clip and choose ONE genre from this list: ' + GENRES.join(', ') + '. Answer with the genre word only.';
   for (let attempt = 0; attempt < 4; attempt++){
+    await gate();
     const r = await gfetch('https://generativelanguage.googleapis.com/v1beta/models/' + encodeURIComponent(model) + ':generateContent', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'x-goog-api-key': key },
@@ -292,7 +320,6 @@ async function analyze(t){
       try {
         g = await geminiGenre(await b64(snippetWav(L, R, s, e)));
         ls.set(ck, g);
-        await sleep(4000);
       } catch (err){ t.note = err.message; }
     }
     if (g) t.genre = g;
@@ -305,8 +332,8 @@ async function analyze(t){
 async function analyzeAll(){
   if (busy) return;
   busy = true;
-  let nt;
-  while ((nt = tracks.find(x => x.status === 'new'))) await analyze(nt);
+  const worker = async () => { let nt; while ((nt = tracks.find(x => x.status === 'new'))) await analyze(nt); };
+  await Promise.all([worker(), worker(), worker()]);
   busy = false;
   const notes = tracks.filter(t => t.note).map(t => t.note);
   setStatus(notes.length ? notes[0] : 'Analysis done. Check the order and genres, then press Build mix.', !!notes.length);
@@ -426,6 +453,7 @@ function render(){
     const tr = document.createElement('tr');
     const td = (cls) => { const c = document.createElement('td'); if (cls) c.className = cls; tr.appendChild(c); return c; };
     if (t.use === false) tr.className = 'skip';
+    if (live.cur && live.cur.t === t) tr.classList.add('now');
     const pick = td('pick');
     const grip = document.createElement('span');
     grip.className = 'grip'; grip.textContent = '⋮⋮'; grip.title = 'Drag to reorder';
@@ -491,7 +519,9 @@ function render(){
     td().textContent = fmtDur(t.dur);
     const act = td('act');
     const mk = (label, fn, dis) => { const x = document.createElement('button'); x.textContent = label; x.disabled = !!dis; x.onclick = fn; act.appendChild(x); };
-    if (t.file || t.preview) mk(playing === t ? '⏸' : '▶', () => togglePlay(t));
+    if (t.file) mk(live.cur && live.cur.t === t && ctx.state === 'running' ? '⏸' : '▶', () => liveToggle(t));
+    else if (t.preview) mk(playing === t ? '⏸' : '▶', () => togglePlay(t));
+    if (t.file && live.cur && live.cur.t !== t){ mk('⏭', () => setNext(t)); act.lastChild.title = 'Play next'; }
     mk(t.prio ? '★' : '☆', () => togglePrio(t)); act.lastChild.title = 'Priority: play as early as it fits';
     mk('↑', () => { [tracks[i-1], tracks[i]] = [tracks[i], tracks[i-1]]; render(); }, i === 0);
     mk('↓', () => { [tracks[i+1], tracks[i]] = [tracks[i], tracks[i+1]]; render(); }, i === tracks.length - 1);
@@ -500,9 +530,11 @@ function render(){
   });
 }
 
-const MIME = { mp3: 'audio/mpeg', wav: 'audio/wav', m4a: 'audio/mp4', aac: 'audio/aac', ogg: 'audio/ogg', flac: 'audio/flac' };
+const MIME = { mp3: 'audio/mpeg', wav: 'audio/wav', m4a: 'audio/mp4', aac: 'audio/aac', ogg: 'audio/ogg', oga: 'audio/ogg', opus: 'audio/ogg', flac: 'audio/flac', webm: 'audio/webm', mp4: 'audio/mp4', aif: 'audio/aiff', aiff: 'audio/aiff' };
+const AUDIO_RE = /\.(mp3|wav|m4a|aac|ogg|oga|opus|flac|webm|mp4|aif|aiff)$/i;
 async function addFiles(list, at){
   let files = Array.from(list);
+  let zipNote = '';
   const zips = files.filter(f => /\.zip$/i.test(f.name));
   if (zips.length){ // песни из zip-архивов добавляются как обычные файлы
     files = files.filter(f => !zips.includes(f));
@@ -511,8 +543,10 @@ async function addFiles(list, at){
         setStatus('Unpacking ' + z.name + '…');
         const zip = await JSZip.loadAsync(z);
         const entries = Object.values(zip.files)
-          .filter(e => !e.dir && /\.(mp3|wav|m4a|aac|ogg|flac)$/i.test(e.name) && !/(^|\/)(__MACOSX\/|\._)/.test(e.name))
+          .filter(e => !e.dir && AUDIO_RE.test(e.name) && !/(^|\/)(__MACOSX\/|\._)/.test(e.name))
           .sort((a, b) => a.name.localeCompare(b.name));
+        const other = Object.values(zip.files).filter(e => !e.dir && !AUDIO_RE.test(e.name) && !/(^|\/)(__MACOSX\/|\._)/.test(e.name));
+        zipNote += z.name + ': ' + entries.length + ' audio files found' + (other.length ? ', skipped ' + other.length + ' other (' + [...new Set(other.map(e => e.name.split('.').pop()))].slice(0, 5).join(', ') + ')' : '') + '. ';
         for (const e of entries){
           const name = e.name.split('/').pop();
           const blob = await e.async('blob');
@@ -521,12 +555,12 @@ async function addFiles(list, at){
       }
     } catch (err){ setStatus('Could not read the zip: ' + err.message, true); }
   }
-  const added = files.filter(f => f.type.startsWith('audio/') || /\.(mp3|wav|m4a|aac|ogg|flac)$/i.test(f.name));
+  const added = files.filter(f => f.type.startsWith('audio/') || AUDIO_RE.test(f.name));
   if (!added.length){ if (zips.length) setStatus('No audio files found inside the zip', true); return; }
   const fresh = added.map(f => ({ file: f, status: 'new', genre: '—', bpm: 0, dur: 0, use: true }));
   tracks.splice(at === undefined ? tracks.length : at, 0, ...fresh);
   render();
-  setStatus('Analyzing tracks…');
+  setStatus('Analyzing tracks… ' + zipNote);
   analyzeAll();
 }
 
@@ -543,7 +577,7 @@ window.addEventListener('drop', e => {
   if (e.dataTransfer.files.length) addFiles(e.dataTransfer.files);
 });
 $('sort').onclick = sortTracks;
-$('clear').onclick = () => { player.pause(); playing = null; tracks = []; render(); setStatus(''); };
+$('clear').onclick = () => { player.pause(); playing = null; if (live.cur){ try { live.cur.v.src.stop(); } catch (e){} live.cur = null; } tracks = []; render(); setStatus(''); };
 $('mix').onclick = mix;
 
 async function geminiSong(q){
@@ -663,6 +697,126 @@ async function loadModels(){
 }
 $('mrefresh').onclick = loadModels;
 loadModels();
+
+/* ---------- Live player: plays the list, prepares each transition ahead of time ---------- */
+let gnext = 0;
+async function gate(){ const now = Date.now(), wait = Math.max(0, gnext - now); gnext = Math.max(now, gnext) + 1500; if (wait) await sleep(wait); }
+
+const live = { cur: null, next: null, shown: null };
+const playable = () => tracks.filter(t => t.use !== false && t.file && t.status !== 'error');
+const nextOf = t => { const l = playable(), i = l.indexOf(t); return i >= 0 ? l[i + 1] || null : null; };
+function ratio(a, b){
+  if ($('tm').value !== '1' || !a.bpm || !b.bpm) return 1;
+  const q = b.bpm / a.bpm;
+  for (const m of [1, 2, 0.5]) if (q * m >= 0.94 && q * m <= 1.06) return q * m;
+  return 1;
+}
+function prep(t){ // decode + find silence + loudness, cached for the current and next track only
+  if (!t.pp) t.pp = (async () => {
+    const ab = await decode(t.file), [L, R] = channels(ab), [s, e] = trimRange(L, R);
+    let sum = 0, peak = 0;
+    for (let i = s; i < e; i++){ const a = L[i], b = R[i]; sum += a * a + b * b; const m = Math.max(Math.abs(a), Math.abs(b)); if (m > peak) peak = m; }
+    const rms = Math.sqrt(sum / (2 * (e - s))) || 1e-6;
+    let g = Math.min(Math.max(0.1 / rms, 0.25), 4); g = Math.min(g, 0.97 / (peak || 1));
+    t.prep = { buf: ab, s: s / SR, len: (e - s) / SR, g };
+    return t.prep;
+  })();
+  return t.pp;
+}
+function makeVoice(p, at, xf){
+  const src = ctx.createBufferSource(); src.buffer = p.buf;
+  const gIn = ctx.createGain(), gOut = ctx.createGain();
+  src.connect(gIn); gIn.connect(gOut); gOut.connect(ctx.destination);
+  if (xf > 0){ const c = new Float32Array(64); for (let i = 0; i < 64; i++) c[i] = Math.sin(i / 63 * Math.PI / 2) * p.g; gIn.gain.value = 0; gIn.gain.setValueCurveAtTime(c, at, xf); }
+  else gIn.gain.value = p.g;
+  src.start(at, p.s, p.len);
+  return { src, gOut, p, at, fading: false };
+}
+function fadeOut(v, T, xf, r){ // fade out and drift to the next track's tempo
+  if (v.fading) return; v.fading = true;
+  const c = new Float32Array(64); for (let i = 0; i < 64; i++) c[i] = Math.cos(i / 63 * Math.PI / 2);
+  v.gOut.gain.setValueCurveAtTime(c, T, xf);
+  v.src.playbackRate.setValueAtTime(1, T);
+  v.src.playbackRate.linearRampToValueAtTime(r, T + xf);
+  v.src.stop(T + xf + 0.05);
+}
+function cleanup(){
+  const keep = [live.cur && live.cur.t, live.next && live.next.t, live.cur && nextOf(live.cur.t)];
+  tracks.forEach(x => { if (!keep.includes(x)){ x.prep = null; x.pp = null; } });
+}
+async function liveStart(t, xf){ // play t now, crossfading from whatever is playing
+  player.pause(); playing = null;
+  try {
+    await ctx.resume();
+    const p = await prep(t);
+    const now = ctx.currentTime + 0.05, old = live.cur;
+    if (live.next){ try { live.next.v.src.stop(); } catch (e){} live.next = null; }
+    if (old) fadeOut(old.v, now, xf, ratio(old.t, t));
+    live.cur = { t, v: makeVoice(p, now, xf) };
+    cleanup();
+  } catch (e){ setStatus('Cannot play this file', true); }
+  render();
+}
+function liveTick(){
+  if (live.next && ctx.currentTime >= live.next.v.at){ live.cur = live.next; live.next = null; cleanup(); }
+  const c = live.cur, now = ctx.currentTime;
+  if (!c || live.next) return;
+  const nt = nextOf(c.t), xf = Math.max(1, +$('cf').value || 6), end = c.v.at + c.v.p.len;
+  if (nt){
+    prep(nt).catch(() => { nt.status = 'error'; render(); });
+    const r = ratio(c.t, nt), T = end - xf * (1 + r) / 2;
+    if (nt.prep && !c.v.fading && now >= T - 1.2){
+      const late = now > T, a = late ? now + 0.05 : T, x = late ? Math.max(0.8, Math.min(xf, end - now)) : xf;
+      fadeOut(c.v, a, x, late ? 1 : r);
+      live.next = { t: nt, v: makeVoice(nt.prep, a, x) };
+    }
+  } else if (!c.v.fading && now >= end - xf){
+    const a = Math.max(now + 0.02, end - xf); fadeOut(c.v, a, Math.max(0.3, end - a), 1);
+  }
+  if (!nt && now > end + 0.3){ live.cur = null; }
+}
+const clean = t => t.file.name.replace(/\.[^.]+$/, '').replace(/_/g, ' ');
+const mmss = s => { s = Math.max(0, Math.round(s)); return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0'); };
+function liveUI(){
+  const c = live.cur, now = ctx.currentTime;
+  if (live.shown !== (c && c.t)){ live.shown = c && c.t; render(); }
+  $('np-play').textContent = c && ctx.state === 'running' ? '⏸ Pause' : '▶ Play';
+  if (!c){
+    $('np-title').textContent = 'Nothing playing'; $('np-meta').textContent = 'Press ▶ on a track or the Play button';
+    $('np-bar').value = 0; $('np-time').textContent = ''; $('nx-info').textContent = '—';
+  } else {
+    const pos = Math.min(c.v.p.len, Math.max(0, now - c.v.at));
+    $('np-title').textContent = clean(c.t); $('np-meta').textContent = c.t.genre + ' · ' + (c.t.bpm || '?') + ' BPM';
+    $('np-bar').max = c.v.p.len; $('np-bar').value = pos; $('np-time').textContent = mmss(pos) + ' / ' + mmss(c.v.p.len);
+    const nt = nextOf(c.t), xf = Math.max(1, +$('cf').value || 6);
+    if (live.next){
+      const w = live.next.v.at - now;
+      $('nx-info').textContent = (w > 0 ? 'Transition in ' + mmss(w) + ' into ' : 'Crossfading into ') + clean(live.next.t);
+    } else if (nt){
+      const r = ratio(c.t, nt), T = c.v.at + c.v.p.len - xf * (1 + r) / 2;
+      $('nx-info').textContent = clean(nt) + '\n' + (c.t.bpm || '?') + ' → ' + (nt.bpm || '?') + ' BPM, tempo ×' + r.toFixed(3) + '\n' +
+        (nt.prep ? 'ready' : 'preparing…') + ', ' + xf + ' s crossfade starts in ' + mmss(T - now);
+    } else $('nx-info').textContent = 'Last track: fades out at the end';
+  }
+  const l = playable(), i = c ? l.indexOf(c.t) : -1, q = $('queue');
+  $('qstat').textContent = l.length + ' tracks · ' + mmss(l.reduce((a, t) => a + (t.dur || 0), 0)) + ' total';
+  q.textContent = '';
+  l.slice(i + 1, i + 7).forEach(t => { const li = document.createElement('li'); li.textContent = clean(t) + ' · ' + (t.bpm || '?'); q.appendChild(li); });
+}
+$('np-play').onclick = async () => {
+  if (!live.cur){ const f = playable()[0]; if (f) liveStart(f, 3); return; }
+  if (ctx.state === 'running') await ctx.suspend(); else await ctx.resume();
+  liveUI(); render();
+};
+$('np-next').onclick = () => { if (!live.cur) return; const nt = nextOf(live.cur.t); if (nt) liveStart(nt, 3); };
+function liveToggle(t){ if (live.cur && live.cur.t === t) $('np-play').click(); else liveStart(t, 3); }
+function setNext(t){
+  if (!live.cur) return;
+  tracks.splice(tracks.indexOf(t), 1);
+  tracks.splice(tracks.indexOf(live.cur.t) + 1, 0, t);
+  t.use = true; render();
+}
+setInterval(liveTick, 200); setInterval(liveUI, 250);
 </script>
 </body>
 </html>
