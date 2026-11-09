@@ -40,6 +40,12 @@ td.name{max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowra
 td input[type=number]{width:72px}
 td.num{color:var(--mut);width:34px}
 td.act button{padding:2px 8px}
+td.pick{white-space:nowrap;width:60px}
+.grip{cursor:grab;color:var(--mut);margin-right:8px;user-select:none}
+tr.skip td:not(.pick):not(.act){opacity:.4}
+tr.dragging{opacity:.4}
+tr.over-top td{box-shadow:inset 0 2px 0 var(--acc)}
+tr.over-bottom td{box-shadow:inset 0 -2px 0 var(--acc)}
 .st{color:var(--mut);font-size:13px}
 .st.err{color:var(--warn)}
 #status{margin-top:10px;min-height:22px}
@@ -72,11 +78,11 @@ progress{width:100%;height:8px;margin-top:8px}
 
   <section>
     <h2>Треки</h2>
-    <div id="drop" tabindex="0">Перетащи сюда mp3 / wav / m4a или нажми, чтобы выбрать файлы</div>
+    <div id="drop" tabindex="0">Перетащи сюда mp3 / wav / m4a или нажми, чтобы выбрать файлы. Файлы можно бросать и прямо в список, на нужное место</div>
     <input id="files" type="file" accept="audio/*" multiple hidden>
     <div class="tablewrap" style="margin-top:12px">
       <table id="tbl" hidden>
-        <thead><tr><th>#</th><th>Файл</th><th>Жанр</th><th>BPM</th><th>Длина</th><th></th></tr></thead>
+        <thead><tr><th title="Тяни за ⋮⋮, чтобы менять порядок. Галочка: включить в микс">Микс</th><th>#</th><th>Файл</th><th>Жанр</th><th>BPM</th><th>Длина</th><th></th></tr></thead>
         <tbody id="rows"></tbody>
       </table>
     </div>
@@ -99,6 +105,7 @@ const $ = id => document.getElementById(id);
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 let tracks = [];
 let busy = false;
+let dragIdx = null; // индекс строки, которую тащим
 
 /* ---------- storage (ключ и модель помним в браузере) ---------- */
 const ls = {
@@ -277,9 +284,8 @@ async function analyze(t){
 async function analyzeAll(){
   if (busy) return;
   busy = true;
-  for (const t of tracks.slice()){
-    if (t.status === 'new') await analyze(t);
-  }
+  let nt;
+  while ((nt = tracks.find(x => x.status === 'new'))) await analyze(nt);
   busy = false;
   const notes = tracks.filter(t => t.note).map(t => t.note);
   setStatus(notes.length ? notes[0] : 'Анализ завершён. Проверь порядок и жанры, потом нажми «Собрать микс».', !!notes.length);
@@ -296,16 +302,17 @@ function sortTracks(){
 
 /* ---------- сборка микса ---------- */
 async function mix(){
-  if (!tracks.length || busy) return;
+  const list = tracks.filter(t => t.use !== false && t.status !== 'error');
+  if (!list.length || busy) return;
   busy = true; setButtons(true);
   const cfS = Math.round((+$('cf').value || 6) * SR);
   const sink = $('fmt').value === 'mp3' ? mp3Sink() : wavSink();
-  const prog = $('prog'); prog.hidden = false; prog.max = tracks.length; prog.value = 0;
+  const prog = $('prog'); prog.hidden = false; prog.max = list.length; prog.value = 0;
   let tail = null;
   try {
-    for (let i = 0; i < tracks.length; i++){
-      const t = tracks[i];
-      setStatus('Обработка ' + (i + 1) + ' из ' + tracks.length + ': ' + t.file.name);
+    for (let i = 0; i < list.length; i++){
+      const t = list[i];
+      setStatus('Обработка ' + (i + 1) + ' из ' + list.length + ': ' + t.file.name);
       const ab = await decode(t.file);
       const [L0, R0] = channels(ab);
       const [s, e] = trimRange(L0, R0);
@@ -359,11 +366,53 @@ function setButtons(dis){ ['mix','sort','clear'].forEach(id => $(id).disabled = 
 function fmtDur(sec){ if (!sec) return '—'; const m = Math.floor(sec / 60), s = Math.round(sec % 60); return m + ':' + String(s).padStart(2, '0'); }
 
 function render(){
+  if (dragIdx !== null) return; // не перерисовываем во время перетаскивания
   $('tbl').hidden = tracks.length === 0;
   const body = $('rows'); body.textContent = '';
   tracks.forEach((t, i) => {
     const tr = document.createElement('tr');
     const td = (cls) => { const c = document.createElement('td'); if (cls) c.className = cls; tr.appendChild(c); return c; };
+    if (t.use === false) tr.className = 'skip';
+    const pick = td('pick');
+    const grip = document.createElement('span');
+    grip.className = 'grip'; grip.textContent = '⋮⋮'; grip.title = 'Тяни, чтобы поменять порядок';
+    pick.appendChild(grip);
+    const cb = document.createElement('input');
+    cb.type = 'checkbox'; cb.checked = t.use !== false; cb.title = 'Включить в микс';
+    cb.onchange = () => { t.use = cb.checked; tr.classList.toggle('skip', !cb.checked); };
+    pick.appendChild(cb);
+    // перетаскивание строк и вставка новых файлов на нужное место
+    grip.onmousedown = () => { tr.draggable = true; };
+    tr.ondragstart = e => {
+      dragIdx = i;
+      e.dataTransfer.effectAllowed = 'move';
+      e.dataTransfer.setData('text/plain', String(i));
+      tr.classList.add('dragging');
+    };
+    tr.ondragend = () => { tr.draggable = false; dragIdx = null; render(); };
+    tr.ondragover = e => {
+      e.preventDefault();
+      const r = tr.getBoundingClientRect();
+      const top = e.clientY < r.top + r.height / 2;
+      tr.classList.toggle('over-top', top);
+      tr.classList.toggle('over-bottom', !top);
+    };
+    tr.ondragleave = () => tr.classList.remove('over-top', 'over-bottom');
+    tr.ondrop = e => {
+      e.preventDefault(); e.stopPropagation();
+      const r = tr.getBoundingClientRect();
+      let pos = i + (e.clientY >= r.top + r.height / 2 ? 1 : 0);
+      if (dragIdx !== null){
+        const from = dragIdx;
+        const [m] = tracks.splice(from, 1);
+        if (from < pos) pos--;
+        tracks.splice(pos, 0, m);
+        dragIdx = null;
+        render();
+      } else if (e.dataTransfer.files.length){
+        addFiles(e.dataTransfer.files, pos);
+      }
+    };
     td('num').textContent = i + 1;
     const nm = td('name'); nm.textContent = t.file.name; nm.title = t.file.name;
     const g = td();
@@ -392,10 +441,11 @@ function render(){
   });
 }
 
-function addFiles(list){
+function addFiles(list, at){
   const added = Array.from(list).filter(f => f.type.startsWith('audio/') || /\.(mp3|wav|m4a|aac|ogg|flac)$/i.test(f.name));
   if (!added.length) return;
-  added.forEach(f => tracks.push({ file: f, status: 'new', genre: '—', bpm: 0, dur: 0 }));
+  const fresh = added.map(f => ({ file: f, status: 'new', genre: '—', bpm: 0, dur: 0, use: true }));
+  tracks.splice(at === undefined ? tracks.length : at, 0, ...fresh);
   render();
   setStatus('Анализирую треки…');
   analyzeAll();
@@ -407,7 +457,12 @@ drop.onkeydown = e => { if (e.key === 'Enter' || e.key === ' ') $('files').click
 $('files').onchange = e => { addFiles(e.target.files); e.target.value = ''; };
 ['dragenter','dragover'].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.add('over'); }));
 ['dragleave','drop'].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.remove('over'); }));
-drop.addEventListener('drop', e => addFiles(e.dataTransfer.files));
+// файл, брошенный в любое место страницы, добавляется в конец (строки списка ловят его раньше и вставляют на своё место)
+window.addEventListener('dragover', e => e.preventDefault());
+window.addEventListener('drop', e => {
+  e.preventDefault();
+  if (e.dataTransfer.files.length) addFiles(e.dataTransfer.files);
+});
 $('sort').onclick = sortTracks;
 $('clear').onclick = () => { tracks = []; render(); setStatus(''); };
 $('mix').onclick = mix;
