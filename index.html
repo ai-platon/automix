@@ -1,9 +1,9 @@
 <!doctype html>
-<html lang="ru">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Автомикс</title>
+<title>Automix</title>
 <style>
 :root{
   --bg:#f3f5f4; --fg:#16201e; --mut:#5d6b68; --card:#ffffff; --line:#d3dbd8;
@@ -54,42 +54,48 @@ progress{width:100%;height:8px;margin-top:8px}
 </head>
 <body>
 <main>
-  <h1>Автомикс</h1>
-  <p class="sub">Склеивает песни в один файл: обрезает тишину, выравнивает громкость, плавно переходит между треками. Всё считается в браузере, файлы никуда не загружаются (кроме 30-секундного фрагмента для Gemini, если указан ключ).</p>
+  <h1>Automix</h1>
+  <p class="sub">Joins songs into one file: trims silence, evens out loudness and crossfades between tracks. Everything runs in your browser and files are never uploaded (except a 30-second clip sent to Gemini if you add a key).</p>
 
   <section>
-    <h2>Настройки</h2>
+    <h2>Settings</h2>
     <div class="row">
-      <label>Ключ Gemini API (необязательно)
+      <label>Gemini API key (optional)
         <input id="key" type="password" size="30" autocomplete="off" placeholder="AIza...">
       </label>
-      <label>Модель
+      <label>Model
         <input id="model" type="text" size="18" value="gemini-2.5-flash">
       </label>
-      <label>Кроссфейд, сек
+      <label>Crossfade, sec
         <input id="cf" type="number" min="1" max="20" step="1" value="6" style="width:80px">
       </label>
-      <label>Формат
-        <select id="fmt"><option value="mp3">MP3 192 кбит/с</option><option value="wav">WAV</option></select>
+      <label>Tempo match<select id="tm"><option value="1">On: current song adapts to the next</option><option value="0">Off</option></select></label>
+      <label>Format
+        <select id="fmt"><option value="mp3">MP3 192 kbps</option><option value="wav">WAV</option></select>
       </label>
     </div>
-    <p class="hint">Ключ хранится только в этом браузере. Без ключа жанр не определяется, сортировка идёт только по BPM. Ключ бесплатно создаётся в Google AI Studio.</p>
+    <p class="hint">The key is stored only in this browser. Without a key, genres are not detected and sorting uses BPM only. You can create a free key in Google AI Studio.</p>
   </section>
 
   <section>
-    <h2>Треки</h2>
-    <div id="drop" tabindex="0">Перетащи сюда mp3 / wav / m4a или нажми, чтобы выбрать файлы. Файлы можно бросать и прямо в список, на нужное место</div>
+    <h2>Tracks</h2>
+    <div id="drop" tabindex="0">Drop mp3 / wav / m4a files here or click to choose. You can also drop files straight onto the list, at the exact spot you want</div>
     <input id="files" type="file" accept="audio/*" multiple hidden>
+    <div class="row" style="margin-top:12px">
+      <label style="flex:1;min-width:240px">Add a song by name (needs a Gemini key)<input id="sname" type="text" placeholder="Artist - Title" style="width:100%"></label>
+      <button id="sadd">Add to list</button>
+    </div>
+    <p class="hint">The song is added as a placeholder with Gemini's guess of genre and BPM, so it takes part in sorting. Later, drop the real audio file onto its row to replace it. Placeholders are skipped when building the mix.</p>
     <div class="tablewrap" style="margin-top:12px">
       <table id="tbl" hidden>
-        <thead><tr><th title="Тяни за ⋮⋮, чтобы менять порядок. Галочка: включить в микс">Микс</th><th>#</th><th>Файл</th><th>Жанр</th><th>BPM</th><th>Длина</th><th></th></tr></thead>
+        <thead><tr><th title="Drag ⋮⋮ to reorder. Untick to skip a track">Mix</th><th>#</th><th>File</th><th>Genre</th><th>BPM</th><th>Length</th><th></th></tr></thead>
         <tbody id="rows"></tbody>
       </table>
     </div>
     <div class="row" style="margin-top:12px">
-      <button id="sort">Сортировать: жанр, потом BPM</button>
-      <button id="clear">Очистить список</button>
-      <button id="mix" class="main">Собрать микс</button>
+      <button id="sort">Sort: genre, then BPM</button>
+      <button id="clear">Clear list</button>
+      <button id="mix" class="main">Build mix</button>
     </div>
     <div id="status" class="st"></div>
     <progress id="prog" value="0" max="1" hidden></progress>
@@ -246,13 +252,13 @@ async function geminiGenre(data){
       body: JSON.stringify({ contents: [{ parts: [{ text: prompt }, { inline_data: { mime_type: 'audio/wav', data } }] }] })
     });
     if (r.status === 429){ await sleep(15000); continue; }
-    if (!r.ok) throw new Error('Gemini ответил ' + r.status);
+    if (!r.ok) throw new Error('Gemini replied ' + r.status);
     const j = await r.json();
     const parts = (j.candidates && j.candidates[0] && j.candidates[0].content && j.candidates[0].content.parts) || [];
     const t = parts.map(p => p.text || '').join(' ').toLowerCase().trim();
     return GENRES.find(g => t.startsWith(g)) || GENRES.find(g => t.includes(g)) || 'other';
   }
-  throw new Error('Gemini: превышен лимит запросов, попробуй позже');
+  throw new Error('Gemini: rate limit reached, try again later');
 }
 
 /* ---------- анализ треков ---------- */
@@ -277,7 +283,7 @@ async function analyze(t){
     if (g) t.genre = g;
     t.status = 'ready';
   } catch (err){
-    t.status = 'error'; t.note = 'Не удалось прочитать файл';
+    t.status = 'error'; t.note = 'Could not read this file';
   }
   render();
 }
@@ -288,21 +294,35 @@ async function analyzeAll(){
   while ((nt = tracks.find(x => x.status === 'new'))) await analyze(nt);
   busy = false;
   const notes = tracks.filter(t => t.note).map(t => t.note);
-  setStatus(notes.length ? notes[0] : 'Анализ завершён. Проверь порядок и жанры, потом нажми «Собрать микс».', !!notes.length);
+  setStatus(notes.length ? notes[0] : 'Analysis done. Check the order and genres, then press Build mix.', !!notes.length);
 }
 
 /* ---------- сортировка ---------- */
+// Priority: put the track at the earliest slot where its neighbours fit (close BPM, same genre)
+function placePrio(t){
+  const rest = tracks.filter(x => x !== t);
+  const d = x => x ? Math.abs((x.bpm || 0) - (t.bpm || 0)) + (x.genre !== t.genre ? 15 : 0) : 0;
+  let best = 0, bc = Infinity;
+  for (let k = 0; k <= rest.length; k++){
+    const c = d(rest[k - 1]) + d(rest[k]);
+    if (c <= 20){ best = k; break; }
+    if (c < bc){ bc = c; best = k; }
+  }
+  rest.splice(best, 0, t); tracks = rest;
+}
+function togglePrio(t){ t.prio = !t.prio; if (t.prio) placePrio(t); render(); }
 function sortTracks(){
   const gs = {};
   tracks.forEach(t => (gs[t.genre] = gs[t.genre] || []).push(t.bpm));
   const avg = g => gs[g].reduce((a, b) => a + b, 0) / gs[g].length;
   tracks.sort((a, b) => a.genre === b.genre ? a.bpm - b.bpm : (avg(a.genre) - avg(b.genre)) || a.genre.localeCompare(b.genre));
+  tracks.filter(t => t.prio).forEach(placePrio);
   render();
 }
 
 /* ---------- сборка микса ---------- */
 async function mix(){
-  const list = tracks.filter(t => t.use !== false && t.status !== 'error');
+  const list = tracks.filter(t => t.use !== false && t.file && t.status !== 'error');
   if (!list.length || busy) return;
   busy = true; setButtons(true);
   const cfS = Math.round((+$('cf').value || 6) * SR);
@@ -312,7 +332,7 @@ async function mix(){
   try {
     for (let i = 0; i < list.length; i++){
       const t = list[i];
-      setStatus('Обработка ' + (i + 1) + ' из ' + list.length + ': ' + t.file.name);
+      setStatus('Processing ' + (i + 1) + ' of ' + list.length + ': ' + t.file.name);
       const ab = await decode(t.file);
       const [L0, R0] = channels(ab);
       const [s, e] = trimRange(L0, R0);
@@ -325,13 +345,23 @@ async function mix(){
       let start = 0;
       if (tail){
         const tl = tail.L.length;
-        const c = Math.min(tl, L.length >> 1, cfS);
-        sink.push(tail.L.subarray(0, tl - c), tail.R.subarray(0, tl - c));
+        // the outgoing song gradually speeds up / slows down to the next song's tempo (max about 6%)
+        let r = 1;
+        const prev = list[i - 1];
+        if ($('tm').value === '1' && t.bpm && prev.bpm){
+          const q = t.bpm / prev.bpm;
+          for (const m of [1, 2, 0.5]) if (q * m >= 0.94 && q * m <= 1.06){ r = q * m; break; }
+        }
+        const c = Math.min(L.length >> 1, Math.floor(tl * 2 / (1 + r)));
+        const pre = tl - Math.min(tl, Math.ceil(c * (1 + r) / 2));
+        sink.push(tail.L.subarray(0, pre), tail.R.subarray(0, pre));
         const mL = new Float32Array(c), mR = new Float32Array(c);
         for (let k = 0; k < c; k++){
           const x = k / c * Math.PI / 2, co = Math.cos(x), si = Math.sin(x);
-          mL[k] = tail.L[tl - c + k] * co + L[k] * si;
-          mR[k] = tail.R[tl - c + k] * co + R[k] * si;
+          const p = pre + k + (r - 1) * k * k / (2 * c);
+          const i0 = Math.min(Math.floor(p), tl - 1), i1 = Math.min(i0 + 1, tl - 1), f = p - i0;
+          mL[k] = (tail.L[i0] * (1 - f) + tail.L[i1] * f) * co + L[k] * si;
+          mR[k] = (tail.R[i0] * (1 - f) + tail.R[i1] * f) * co + R[k] * si;
         }
         sink.push(mL, mR);
         start = c;
@@ -346,16 +376,16 @@ async function mix(){
     const n = tail.L.length;
     for (let k = 0; k < n; k++){ const m = Math.cos(k / n * Math.PI / 2); tail.L[k] *= m; tail.R[k] *= m; }
     sink.push(tail.L, tail.R);
-    setStatus('Кодирую файл…');
+    setStatus('Encoding file…');
     await sleep(20);
     const blob = sink.finish();
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url; a.download = 'mix.' + sink.ext;
     document.body.appendChild(a); a.click(); a.remove();
-    setStatus('Готово: mix.' + sink.ext + ' (' + (blob.size / 1048576).toFixed(1) + ' МБ).');
+    setStatus('Done: mix.' + sink.ext + ' (' + (blob.size / 1048576).toFixed(1) + ' MB).');
   } catch (err){
-    setStatus('Ошибка: ' + err.message, true);
+    setStatus('Error: ' + err.message, true);
   }
   prog.hidden = true; busy = false; setButtons(false);
 }
@@ -375,10 +405,10 @@ function render(){
     if (t.use === false) tr.className = 'skip';
     const pick = td('pick');
     const grip = document.createElement('span');
-    grip.className = 'grip'; grip.textContent = '⋮⋮'; grip.title = 'Тяни, чтобы поменять порядок';
+    grip.className = 'grip'; grip.textContent = '⋮⋮'; grip.title = 'Drag to reorder';
     pick.appendChild(grip);
     const cb = document.createElement('input');
-    cb.type = 'checkbox'; cb.checked = t.use !== false; cb.title = 'Включить в микс';
+    cb.type = 'checkbox'; cb.checked = t.use !== false; cb.title = 'Include in mix';
     cb.onchange = () => { t.use = cb.checked; tr.classList.toggle('skip', !cb.checked); };
     pick.appendChild(cb);
     // перетаскивание строк и вставка новых файлов на нужное место
@@ -410,23 +440,26 @@ function render(){
         dragIdx = null;
         render();
       } else if (e.dataTransfer.files.length){
+        const keepPrio = t.prio;
+        if (t.status === 'ph'){ tracks.splice(i, 1); pos = i; }
         addFiles(e.dataTransfer.files, pos);
+        if (tracks[pos] && tracks[pos].status === 'new') tracks[pos].prio = keepPrio;
       }
     };
     td('num').textContent = i + 1;
-    const nm = td('name'); nm.textContent = t.file.name; nm.title = t.file.name;
+    const nm = td('name'); nm.textContent = nm.title = t.file ? t.file.name : '⏳ ' + t.title + ' (no file yet, drop it onto this row)';
     const g = td();
-    if (t.status === 'ready'){
+    if (t.status === 'ready' || t.status === 'ph'){
       const sel = document.createElement('select');
       ['—'].concat(GENRES).forEach(x => { const o = document.createElement('option'); o.value = o.textContent = x; if (x === t.genre) o.selected = true; sel.appendChild(o); });
       sel.onchange = () => { t.genre = sel.value; };
       g.appendChild(sel);
     } else {
       g.innerHTML = '<span class="st' + (t.status === 'error' ? ' err' : '') + '"></span>';
-      g.firstChild.textContent = t.status === 'error' ? t.note : t.status === 'analyzing' ? 'анализ…' : 'в очереди';
+      g.firstChild.textContent = t.status === 'error' ? t.note : t.status === 'analyzing' ? 'analyzing…' : 'queued';
     }
     const b = td();
-    if (t.status === 'ready'){
+    if (t.status === 'ready' || t.status === 'ph'){
       const inp = document.createElement('input'); inp.type = 'number'; inp.min = 0; inp.max = 300; inp.value = t.bpm;
       inp.onchange = () => { t.bpm = +inp.value || 0; };
       b.appendChild(inp);
@@ -434,6 +467,7 @@ function render(){
     td().textContent = fmtDur(t.dur);
     const act = td('act');
     const mk = (label, fn, dis) => { const x = document.createElement('button'); x.textContent = label; x.disabled = !!dis; x.onclick = fn; act.appendChild(x); };
+    mk(t.prio ? '★' : '☆', () => togglePrio(t)); act.lastChild.title = 'Priority: play as early as it fits';
     mk('↑', () => { [tracks[i-1], tracks[i]] = [tracks[i], tracks[i-1]]; render(); }, i === 0);
     mk('↓', () => { [tracks[i+1], tracks[i]] = [tracks[i], tracks[i+1]]; render(); }, i === tracks.length - 1);
     mk('✕', () => { tracks.splice(i, 1); render(); });
@@ -447,7 +481,7 @@ function addFiles(list, at){
   const fresh = added.map(f => ({ file: f, status: 'new', genre: '—', bpm: 0, dur: 0, use: true }));
   tracks.splice(at === undefined ? tracks.length : at, 0, ...fresh);
   render();
-  setStatus('Анализирую треки…');
+  setStatus('Analyzing tracks…');
   analyzeAll();
 }
 
@@ -466,6 +500,36 @@ window.addEventListener('drop', e => {
 $('sort').onclick = sortTracks;
 $('clear').onclick = () => { tracks = []; render(); setStatus(''); };
 $('mix').onclick = mix;
+
+async function geminiSong(q){
+  const key = $('key').value.trim();
+  if (!key) throw new Error('Add a Gemini API key first');
+  const model = $('model').value.trim() || 'gemini-2.5-flash';
+  const prompt = 'Identify this song: "' + q + '". Reply with JSON only: {"title":"","artist":"","genre":"one of: ' + GENRES.join(', ') + '","bpm":0}. bpm is your best estimate of the tempo as a number.';
+  const r = await fetch('https://generativelanguage.googleapis.com/v1beta/models/' + encodeURIComponent(model) + ':generateContent', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'x-goog-api-key': key },
+    body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }], generationConfig: { responseMimeType: 'application/json' } })
+  });
+  if (!r.ok) throw new Error('Gemini replied ' + r.status);
+  const j = await r.json();
+  const parts = (j.candidates && j.candidates[0] && j.candidates[0].content && j.candidates[0].content.parts) || [];
+  return JSON.parse(parts.map(p => p.text || '').join(''));
+}
+$('sadd').onclick = async () => {
+  const q = $('sname').value.trim();
+  if (!q) return;
+  setStatus('Asking Gemini…');
+  try {
+    const o = await geminiSong(q);
+    const g = String(o.genre || '').toLowerCase();
+    tracks.push({ file: null, title: (o.artist ? o.artist + ' - ' : '') + (o.title || q), status: 'ph',
+      genre: GENRES.includes(g) ? g : 'other', bpm: Math.round(+o.bpm) || 0, dur: 0, use: true });
+    $('sname').value = ''; render();
+    setStatus('Added. Genre and BPM are Gemini\'s estimate from the name, you can edit them.');
+  } catch (err){ setStatus(err.message, true); }
+};
+$('sname').onkeydown = e => { if (e.key === 'Enter') $('sadd').click(); };
 </script>
 </body>
 </html>
