@@ -41,6 +41,9 @@ td input[type=number]{width:72px}
 td.num{color:var(--mut);width:34px}
 td.act button{padding:2px 8px}
 td.pick{white-space:nowrap;width:60px}
+#sres{margin-top:6px}
+.sug{display:flex;align-items:center;gap:10px;width:100%;text-align:left;margin-top:4px}
+.sug img{border-radius:4px}
 .grip{cursor:grab;color:var(--mut);margin-right:8px;user-select:none}
 tr.skip td:not(.pick):not(.act){opacity:.4}
 tr.dragging{opacity:.4}
@@ -79,13 +82,14 @@ progress{width:100%;height:8px;margin-top:8px}
 
   <section>
     <h2>Tracks</h2>
-    <div id="drop" tabindex="0">Drop mp3 / wav / m4a files here or click to choose. You can also drop files straight onto the list, at the exact spot you want</div>
-    <input id="files" type="file" accept="audio/*" multiple hidden>
+    <div id="drop" tabindex="0">Drop mp3 / wav / m4a files or .zip archives with songs here, or click to choose. You can also drop files straight onto the list, at the exact spot you want</div>
+    <input id="files" type="file" accept="audio/*,.zip,application/zip" multiple hidden>
     <div class="row" style="margin-top:12px">
-      <label style="flex:1;min-width:240px">Add a song by name (needs a Gemini key)<input id="sname" type="text" placeholder="Artist - Title" style="width:100%"></label>
-      <button id="sadd">Add to list</button>
+      <label style="flex:1;min-width:240px">Search a song by name<input id="sname" type="text" placeholder="Artist - Title" style="width:100%"></label>
+      <button id="sadd">Add via Gemini</button>
     </div>
-    <p class="hint">The song is added as a placeholder with Gemini's guess of genre and BPM, so it takes part in sorting. Later, drop the real audio file onto its row to replace it. Placeholders are skipped when building the mix.</p>
+    <div id="sres"></div>
+    <p class="hint">Type 3+ letters and pick a result: title, cover and genre come from iTunes, BPM from Gemini (if a key is set). Each found song gets a 30-second preview (▶). Full songs cannot be downloaded here, so to put a song into the mix, drop your own audio file onto its row.</p>
     <div class="tablewrap" style="margin-top:12px">
       <table id="tbl" hidden>
         <thead><tr><th title="Drag ⋮⋮ to reorder. Untick to skip a track">Mix</th><th>#</th><th>File</th><th>Genre</th><th>BPM</th><th>Length</th><th></th></tr></thead>
@@ -104,6 +108,7 @@ progress{width:100%;height:8px;margin-top:8px}
 </main>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/lamejs/1.2.1/lame.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 <script>
 const GENRES = ['rock','metal','pop','hip-hop','electronic','dance','r&b','jazz','classical','folk','reggae','latin','ambient','other'];
 const SR = 44100;
@@ -118,7 +123,7 @@ function togglePlay(t){
   if (playing === t){ player.pause(); playing = null; }
   else {
     if (player.src.startsWith('blob:')) URL.revokeObjectURL(player.src);
-    player.src = URL.createObjectURL(t.file); player.play(); playing = t;
+    player.src = t.file ? URL.createObjectURL(t.file) : t.preview; player.play(); playing = t;
   }
   render();
 }
@@ -461,11 +466,12 @@ function render(){
         const keepPrio = t.prio;
         if (t.status === 'ph'){ tracks.splice(i, 1); pos = i; }
         addFiles(e.dataTransfer.files, pos);
-        if (tracks[pos] && tracks[pos].status === 'new') tracks[pos].prio = keepPrio;
+        if (keepPrio && tracks[pos] && tracks[pos].status === 'new' && !/\.zip$/i.test(e.dataTransfer.files[0].name)) tracks[pos].prio = keepPrio;
       }
     };
     td('num').textContent = i + 1;
-    const nm = td('name'); nm.textContent = nm.title = t.file ? t.file.name : '⏳ ' + t.title + ' (no file yet, drop it onto this row)';
+    const nm = td('name'); nm.textContent = nm.title = t.file ? t.file.name : t.title + ' (no file yet, drop yours onto this row)';
+    if (t.art){ const im = document.createElement('img'); im.src = t.art; im.width = im.height = 28; im.style.cssText = 'border-radius:4px;vertical-align:middle;margin-right:8px'; nm.prepend(im); }
     const g = td();
     if (t.status === 'ready' || t.status === 'ph'){
       const sel = document.createElement('select');
@@ -485,7 +491,7 @@ function render(){
     td().textContent = fmtDur(t.dur);
     const act = td('act');
     const mk = (label, fn, dis) => { const x = document.createElement('button'); x.textContent = label; x.disabled = !!dis; x.onclick = fn; act.appendChild(x); };
-    if (t.file) mk(playing === t ? '⏸' : '▶', () => togglePlay(t));
+    if (t.file || t.preview) mk(playing === t ? '⏸' : '▶', () => togglePlay(t));
     mk(t.prio ? '★' : '☆', () => togglePrio(t)); act.lastChild.title = 'Priority: play as early as it fits';
     mk('↑', () => { [tracks[i-1], tracks[i]] = [tracks[i], tracks[i-1]]; render(); }, i === 0);
     mk('↓', () => { [tracks[i+1], tracks[i]] = [tracks[i], tracks[i+1]]; render(); }, i === tracks.length - 1);
@@ -494,9 +500,29 @@ function render(){
   });
 }
 
-function addFiles(list, at){
-  const added = Array.from(list).filter(f => f.type.startsWith('audio/') || /\.(mp3|wav|m4a|aac|ogg|flac)$/i.test(f.name));
-  if (!added.length) return;
+const MIME = { mp3: 'audio/mpeg', wav: 'audio/wav', m4a: 'audio/mp4', aac: 'audio/aac', ogg: 'audio/ogg', flac: 'audio/flac' };
+async function addFiles(list, at){
+  let files = Array.from(list);
+  const zips = files.filter(f => /\.zip$/i.test(f.name));
+  if (zips.length){ // песни из zip-архивов добавляются как обычные файлы
+    files = files.filter(f => !zips.includes(f));
+    try {
+      for (const z of zips){
+        setStatus('Unpacking ' + z.name + '…');
+        const zip = await JSZip.loadAsync(z);
+        const entries = Object.values(zip.files)
+          .filter(e => !e.dir && /\.(mp3|wav|m4a|aac|ogg|flac)$/i.test(e.name) && !/(^|\/)(__MACOSX\/|\._)/.test(e.name))
+          .sort((a, b) => a.name.localeCompare(b.name));
+        for (const e of entries){
+          const name = e.name.split('/').pop();
+          const blob = await e.async('blob');
+          files.push(new File([blob], name, { type: MIME[name.split('.').pop().toLowerCase()] || '' }));
+        }
+      }
+    } catch (err){ setStatus('Could not read the zip: ' + err.message, true); }
+  }
+  const added = files.filter(f => f.type.startsWith('audio/') || /\.(mp3|wav|m4a|aac|ogg|flac)$/i.test(f.name));
+  if (!added.length){ if (zips.length) setStatus('No audio files found inside the zip', true); return; }
   const fresh = added.map(f => ({ file: f, status: 'new', genre: '—', bpm: 0, dur: 0, use: true }));
   tracks.splice(at === undefined ? tracks.length : at, 0, ...fresh);
   render();
@@ -549,7 +575,55 @@ $('sadd').onclick = async () => {
     setStatus('Added. Genre and BPM are Gemini\'s estimate from the name, you can edit them.');
   } catch (err){ setStatus(err.message, true); } finally { clearInterval(tick); $('sadd').disabled = false; }
 };
-$('sname').onkeydown = e => { if (e.key === 'Enter') $('sadd').click(); };
+$('sname').onkeydown = e => {
+  if (e.key !== 'Enter') return;
+  const first = $('sres').querySelector('button');
+  first ? first.click() : $('sadd').click();
+};
+function mapGenre(g){
+  g = (g || '').toLowerCase();
+  const m = [['hip','hip-hop'],['rap','hip-hop'],['r&b','r&b'],['soul','r&b'],['metal','metal'],['rock','rock'],['alternative','rock'],['punk','rock'],
+    ['dance','dance'],['house','electronic'],['electro','electronic'],['techno','electronic'],['pop','pop'],['jazz','jazz'],['classical','classical'],
+    ['country','folk'],['folk','folk'],['reggae','reggae'],['latin','latin'],['ambient','ambient'],['new age','ambient']];
+  for (const [k, v] of m) if (g.includes(k)) return v;
+  return 'other';
+}
+let stimer = null;
+$('sname').addEventListener('input', () => {
+  clearTimeout(stimer);
+  const q = $('sname').value.trim();
+  if (q.length < 3){ $('sres').textContent = ''; return; }
+  stimer = setTimeout(() => searchSongs(q), 350);
+});
+async function searchSongs(q){
+  const box = $('sres');
+  try {
+    const r = await fetch('https://itunes.apple.com/search?media=music&entity=song&limit=6&term=' + encodeURIComponent(q));
+    const j = await r.json();
+    if ($('sname').value.trim() !== q) return;
+    box.textContent = '';
+    (j.results || []).forEach(x => {
+      const b = document.createElement('button');
+      b.type = 'button'; b.className = 'sug';
+      const im = document.createElement('img'); im.src = x.artworkUrl60; im.width = im.height = 36;
+      const sp = document.createElement('span'); sp.textContent = x.artistName + ' - ' + x.trackName + '  ·  ' + x.primaryGenreName;
+      b.append(im, sp);
+      b.onclick = () => addFound(x);
+      box.appendChild(b);
+    });
+    if (!box.children.length) box.textContent = 'Nothing found. Try "Add via Gemini".';
+  } catch (e){ box.textContent = 'Search failed: ' + e.message; }
+}
+async function addFound(x){
+  $('sres').textContent = ''; $('sname').value = '';
+  const t = { file: null, title: x.artistName + ' - ' + x.trackName, status: 'ph', genre: mapGenre(x.primaryGenreName), bpm: 0,
+    dur: (x.trackTimeMillis || 0) / 1000, use: true, art: x.artworkUrl60, preview: x.previewUrl };
+  tracks.push(t); render();
+  if ($('key').value.trim()){
+    try { const o = await geminiSong(t.title); t.bpm = Math.round(+o.bpm) || 0; } catch (e){}
+    render();
+  }
+}
 
 async function gfetch(url, opts){
   const ac = new AbortController(), t = setTimeout(() => ac.abort(), 45000);
