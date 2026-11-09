@@ -99,6 +99,7 @@ progress{width:100%;height:8px;margin-top:8px}
     </div>
     <div id="status" class="st"></div>
     <progress id="prog" value="0" max="1" hidden></progress>
+    <audio id="result" controls hidden style="width:100%;margin-top:10px"></audio>
   </section>
 </main>
 
@@ -111,6 +112,16 @@ const $ = id => document.getElementById(id);
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 let tracks = [];
 let busy = false;
+const player = new Audio(); let playing = null;
+player.onended = () => { playing = null; render(); };
+function togglePlay(t){
+  if (playing === t){ player.pause(); playing = null; }
+  else {
+    if (player.src.startsWith('blob:')) URL.revokeObjectURL(player.src);
+    player.src = URL.createObjectURL(t.file); player.play(); playing = t;
+  }
+  render();
+}
 let dragIdx = null; // индекс строки, которую тащим
 
 /* ---------- storage (ключ и модель помним в браузере) ---------- */
@@ -321,8 +332,13 @@ function sortTracks(){
 
 /* ---------- сборка микса ---------- */
 async function mix(){
+  if (busy) return setStatus('Please wait, the analysis is still running', true);
   const list = tracks.filter(t => t.use !== false && t.file && t.status !== 'error');
-  if (!list.length || busy) return;
+  if (!list.length){
+    const ph = tracks.some(t => t.status === 'ph');
+    return setStatus(ph ? 'Nothing to mix yet: these rows are placeholders without audio. Drop the real files onto the rows (or onto the list).'
+                        : 'Add some audio files first, and keep them ticked in the Mix column.', true);
+  }
   busy = true; setButtons(true);
   const cfS = Math.round((+$('cf').value || 6) * SR);
   const sink = $('fmt').value === 'mp3' ? mp3Sink() : wavSink();
@@ -379,6 +395,9 @@ async function mix(){
     await sleep(20);
     const blob = sink.finish();
     const url = URL.createObjectURL(blob);
+    const ra = $('result');
+    if (ra.src.startsWith('blob:')) URL.revokeObjectURL(ra.src);
+    ra.src = url; ra.hidden = false;
     const a = document.createElement('a');
     a.href = url; a.download = 'mix.' + sink.ext;
     document.body.appendChild(a); a.click(); a.remove();
@@ -466,6 +485,7 @@ function render(){
     td().textContent = fmtDur(t.dur);
     const act = td('act');
     const mk = (label, fn, dis) => { const x = document.createElement('button'); x.textContent = label; x.disabled = !!dis; x.onclick = fn; act.appendChild(x); };
+    if (t.file) mk(playing === t ? '⏸' : '▶', () => togglePlay(t));
     mk(t.prio ? '★' : '☆', () => togglePrio(t)); act.lastChild.title = 'Priority: play as early as it fits';
     mk('↑', () => { [tracks[i-1], tracks[i]] = [tracks[i], tracks[i-1]]; render(); }, i === 0);
     mk('↓', () => { [tracks[i+1], tracks[i]] = [tracks[i], tracks[i+1]]; render(); }, i === tracks.length - 1);
@@ -497,7 +517,7 @@ window.addEventListener('drop', e => {
   if (e.dataTransfer.files.length) addFiles(e.dataTransfer.files);
 });
 $('sort').onclick = sortTracks;
-$('clear').onclick = () => { tracks = []; render(); setStatus(''); };
+$('clear').onclick = () => { player.pause(); playing = null; tracks = []; render(); setStatus(''); };
 $('mix').onclick = mix;
 
 async function geminiSong(q){
