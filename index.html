@@ -64,7 +64,7 @@ progress{width:100%;height:8px;margin-top:8px}
         <input id="key" type="password" size="30" autocomplete="off" placeholder="AIza...">
       </label>
       <label>Model
-        <input id="model" type="text" size="18" value="gemini-2.5-flash">
+        <span style="display:flex;gap:6px"><select id="model" style="min-width:210px"></select><button id="mrefresh" type="button" title="Reload the model list from Google">↻</button></span>
       </label>
       <label>Crossfade, sec
         <input id="cf" type="number" min="1" max="20" step="1" value="6" style="width:80px">
@@ -119,8 +119,7 @@ const ls = {
   set(k,v){ try { localStorage.setItem(k,v); } catch(e){} }
 };
 $('key').value = ls.get('gemini_key') || '';
-$('model').value = ls.get('gemini_model') || 'gemini-2.5-flash';
-$('key').addEventListener('change', () => ls.set('gemini_key', $('key').value.trim()));
+$('key').addEventListener('change', () => { ls.set('gemini_key', $('key').value.trim()); loadModels(); });
 $('model').addEventListener('change', () => ls.set('gemini_model', $('model').value.trim()));
 
 /* ---------- аудио-утилиты ---------- */
@@ -252,7 +251,7 @@ async function geminiGenre(data){
       body: JSON.stringify({ contents: [{ parts: [{ text: prompt }, { inline_data: { mime_type: 'audio/wav', data } }] }] })
     });
     if (r.status === 429){ await sleep(15000); continue; }
-    if (!r.ok) throw new Error('Gemini replied ' + r.status);
+    if (!r.ok) throw gerr(r);
     const j = await r.json();
     const parts = (j.candidates && j.candidates[0] && j.candidates[0].content && j.candidates[0].content.parts) || [];
     const t = parts.map(p => p.text || '').join(' ').toLowerCase().trim();
@@ -511,7 +510,7 @@ async function geminiSong(q){
     headers: { 'Content-Type': 'application/json', 'x-goog-api-key': key },
     body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }], generationConfig: { responseMimeType: 'application/json' } })
   });
-  if (!r.ok) throw new Error('Gemini replied ' + r.status);
+  if (!r.ok) throw gerr(r);
   const j = await r.json();
   const parts = (j.candidates && j.candidates[0] && j.candidates[0].content && j.candidates[0].content.parts) || [];
   return JSON.parse(parts.map(p => p.text || '').join(''));
@@ -530,6 +529,36 @@ $('sadd').onclick = async () => {
   } catch (err){ setStatus(err.message, true); }
 };
 $('sname').onkeydown = e => { if (e.key === 'Enter') $('sadd').click(); };
+
+function gerr(r){
+  const hint = r.status === 404 ? ': this model is not available, pick another one in the Model list (↻ reloads it)'
+             : (r.status === 400 || r.status === 403) ? ': check the API key' : '';
+  return new Error('Gemini replied ' + r.status + hint);
+}
+// Model list: loaded from Google with your key; falls back to the "latest" aliases without a key
+async function loadModels(){
+  const sel = $('model'), key = $('key').value.trim(), saved = ls.get('gemini_model');
+  let names = ['gemini-flash-latest', 'gemini-flash-lite-latest', 'gemini-pro-latest'];
+  if (key){
+    try {
+      const r = await fetch('https://generativelanguage.googleapis.com/v1beta/models?pageSize=1000', { headers: { 'x-goog-api-key': key } });
+      if (r.ok){
+        const j = await r.json();
+        const found = (j.models || [])
+          .filter(m => (m.supportedGenerationMethods || []).includes('generateContent') && /^models\/gemini/.test(m.name)
+            && !/(embedding|image|tts|live|audio|robotics|computer-use|aqa|vision)/.test(m.name))
+          .map(m => m.name.replace('models/', ''));
+        if (found.length) names = found.sort((a, b) => (b.includes('latest') - a.includes('latest')) || b.localeCompare(a));
+      } else setStatus('Could not load the model list (' + r.status + '), check the API key', true);
+    } catch (e) {}
+  }
+  sel.textContent = '';
+  names.forEach(n => { const o = document.createElement('option'); o.value = o.textContent = n; sel.appendChild(o); });
+  sel.value = names.includes(saved) ? saved
+    : (names.find(n => n === 'gemini-flash-latest') || names.find(n => /flash/.test(n) && !/lite/.test(n)) || names[0]);
+}
+$('mrefresh').onclick = loadModels;
+loadModels();
 </script>
 </body>
 </html>
